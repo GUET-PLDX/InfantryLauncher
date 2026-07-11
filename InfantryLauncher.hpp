@@ -53,8 +53,8 @@ required_hardware:
   - dr16
   - can
 depends:
-  - qdu-future/CMD
-  - qdu-future/RMMotor
+  - pldx/CMD
+  - pldx/RMMotor
 === END MANIFEST === */
 // clang-format on
 
