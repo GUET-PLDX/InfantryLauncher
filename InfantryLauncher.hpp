@@ -268,9 +268,12 @@ class InfantryLauncher {
   }
 
   void Update() {
-    motor_fric_0_->Update();
-    motor_fric_1_->Update();
-    motor_trig_->Update();
+    const auto FRIC_0_STATUS = motor_fric_0_->Update();
+    const auto FRIC_1_STATUS = motor_fric_1_->Update();
+    const auto TRIG_STATUS = motor_trig_->Update();
+    motors_online_ = FRIC_0_STATUS == LibXR::ErrorCode::OK &&
+                     FRIC_1_STATUS == LibXR::ErrorCode::OK &&
+                     TRIG_STATUS == LibXR::ErrorCode::OK;
 
     param_fric_0_ = motor_fric_0_->GetFeedback();
     param_fric_1_ = motor_fric_1_->GetFeedback();
@@ -286,6 +289,14 @@ class InfantryLauncher {
   }
 
   void Control() {
+    if (!motors_online_) {
+      out_trig_ = 0.0f;
+      motor_trig_->Relax();
+      motor_fric_0_->Relax();
+      motor_fric_1_->Relax();
+      return;
+    }
+
     float out_fric_0 = 0.0f;
     float out_fric_1 = 0.0f;
     Motor::Feedback trig_fb{};
@@ -496,6 +507,7 @@ class InfantryLauncher {
   bool ui_fric_text_initialized_ = false;
   bool ui_fire_mode_text_initialized_ = false;
   bool ui_shot_position_initialized_ = false;
+  bool motors_online_ = false;
   uint32_t ui_refresh_tick_ = 0;
 
   float shot_progress_ = 0.0f;
