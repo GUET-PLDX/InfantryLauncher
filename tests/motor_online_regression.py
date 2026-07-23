@@ -32,23 +32,21 @@ update = compact(function_body("Update"))
 control = compact(function_body("Control"))
 
 updates = (
-    ("motor_fric_0_", "FRIC_0_STATUS"),
-    ("motor_fric_1_", "FRIC_1_STATUS"),
-    ("motor_trig_", "TRIG_STATUS"),
+    ("motor_fric_0_", "motor_fric_0_status_"),
+    ("motor_fric_1_", "motor_fric_1_status_"),
+    ("motor_trig_", "motor_trig_status_"),
 )
 for motor, status in updates:
-    if re.search(
-        rf"\bconst auto {status} = {motor}->Update\(\);", update
-    ) is None:
+    if re.search(rf"\b{status} = {motor}->Update\(\);", update) is None:
         errors.append(f"discarded update status: {motor}")
 
 if re.search(r"^[ \t]*motor_\w*_->Update\(\);[ \t]*$", SOURCE, re.MULTILINE):
     errors.append("bare motor Update() statement remains")
 
 online_assignment = (
-    "motors_online_ = FRIC_0_STATUS == LibXR::ErrorCode::OK && "
-    "FRIC_1_STATUS == LibXR::ErrorCode::OK && "
-    "TRIG_STATUS == LibXR::ErrorCode::OK;"
+    "motors_online_ = motor_fric_0_status_ == LibXR::ErrorCode::OK && "
+    "motor_fric_1_status_ == LibXR::ErrorCode::OK && "
+    "motor_trig_status_ == LibXR::ErrorCode::OK;"
 )
 if online_assignment not in update:
     errors.append("motors_online_ does not require all three successful updates")
@@ -56,7 +54,9 @@ if online_assignment not in update:
 if re.search(r"\bbool motors_online_ = false;", SOURCE) is None:
     errors.append("motors_online_ member is missing or not fail-safe initialized")
 
-guard = re.match(r"if \(!motors_online_\) \{(.*?)\}", control)
+guard = re.match(
+    r"if \(!motors_online_ \|\| motor_fault_latched_\) \{(.*?)\}", control
+)
 if guard is None:
     errors.append("Control() must begin with the offline guard")
 else:

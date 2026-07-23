@@ -260,7 +260,9 @@ class InfantryLauncher {
       }
       self->mutex_.Lock();
       self->Update();
-      self->RunStateMachine();
+      if (!self->motor_fault_latched_) {
+        self->RunStateMachine();
+      }
       self->mutex_.Unlock();
       self->Control();
       LibXR::Thread::Sleep(2);
@@ -268,12 +270,23 @@ class InfantryLauncher {
   }
 
   void Update() {
-    const auto FRIC_0_STATUS = motor_fric_0_->Update();
-    const auto FRIC_1_STATUS = motor_fric_1_->Update();
-    const auto TRIG_STATUS = motor_trig_->Update();
-    motors_online_ = FRIC_0_STATUS == LibXR::ErrorCode::OK &&
-                     FRIC_1_STATUS == LibXR::ErrorCode::OK &&
-                     TRIG_STATUS == LibXR::ErrorCode::OK;
+    motor_fric_0_status_ = motor_fric_0_->Update();
+    motor_fric_1_status_ = motor_fric_1_->Update();
+    motor_trig_status_ = motor_trig_->Update();
+    motors_online_ = motor_fric_0_status_ == LibXR::ErrorCode::OK &&
+                     motor_fric_1_status_ == LibXR::ErrorCode::OK &&
+                     motor_trig_status_ == LibXR::ErrorCode::OK;
+
+    if (!motors_online_ && !motor_fault_latched_) {
+      motor_fault_latched_ = true;
+      pid_fric_0_.Reset();
+      pid_fric_1_.Reset();
+      pid_trig_angle_.Reset();
+      pid_trig_sp_.Reset();
+    }
+    if (motor_fault_latched_) {
+      ForceMotorFaultSafeState();
+    }
 
     param_fric_0_ = motor_fric_0_->GetFeedback();
     param_fric_1_ = motor_fric_1_->GetFeedback();
@@ -289,7 +302,7 @@ class InfantryLauncher {
   }
 
   void Control() {
-    if (!motors_online_) {
+    if (!motors_online_ || motor_fault_latched_) {
       out_trig_ = 0.0f;
       motor_trig_->Relax();
       motor_fric_0_->Relax();
@@ -354,6 +367,13 @@ class InfantryLauncher {
   }
 
   void SetMode(uint32_t mode) {
+    if (motor_fault_latched_) {
+      if (!motors_online_) {
+        return;
+      }
+      motor_fault_latched_ = false;
+    }
+
     auto event = static_cast<LauncherEvent>(mode);
     switch (event) {
       case LauncherEvent::SET_SHOTMODE_SINGLE:
@@ -464,6 +484,9 @@ class InfantryLauncher {
   Motor::Feedback param_fric_0_{};
   Motor::Feedback param_fric_1_{};
   Motor::Feedback param_trig_{};
+  LibXR::ErrorCode motor_fric_0_status_ = LibXR::ErrorCode::FAILED;
+  LibXR::ErrorCode motor_fric_1_status_ = LibXR::ErrorCode::FAILED;
+  LibXR::ErrorCode motor_trig_status_ = LibXR::ErrorCode::FAILED;
 
   LibXR::PID<float> pid_trig_angle_;
   LibXR::PID<float> pid_trig_sp_;
@@ -508,6 +531,7 @@ class InfantryLauncher {
   bool ui_fire_mode_text_initialized_ = false;
   bool ui_shot_position_initialized_ = false;
   bool motors_online_ = false;
+  bool motor_fault_latched_ = false;
   uint32_t ui_refresh_tick_ = 0;
 
   float shot_progress_ = 0.0f;
@@ -534,6 +558,18 @@ class InfantryLauncher {
       .merge = 0.0f,
   };
   LibXR::Mutex mutex_;
+
+  void ForceMotorFaultSafeState() {
+    launcher_cmd_.isfire = false;
+    launcher_event_ = LauncherEvent::SET_FRICMODE_RELAX;
+    launcher_state_ = LauncherState::RELAX;
+    trig_mode_ = TrigMode::RELAX;
+    out_trig_ = 0.0f;
+    target_rpm_ = 0.0f;
+    target_trig_angle_ = trig_angle_;
+    press_continue_ = false;
+    trigger_step_active_ = false;
+  }
 
   void UpdateLauncherState() {
     if (param_trig_.torque > launcher::param::JAM_TORQUE) {
