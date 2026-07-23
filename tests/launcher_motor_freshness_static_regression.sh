@@ -73,6 +73,8 @@ def validate(source):
         "if (motor_fault_latched_) { ForceMotorFaultSafeState(); }",
         update,
     )
+    if re.search(r"\bmotor_fault_latched_\s*=\s*false\s*;", update):
+        raise ContractError("Update() must not clear the motor fault latch")
     if "XR_LOG_" in update:
         raise ContractError("periodic Update() diagnostics are forbidden")
 
@@ -140,7 +142,12 @@ mutations = (
     (
         "automatic online latch clear",
         "if (motor_fault_latched_) {\n      ForceMotorFaultSafeState();\n    }",
-        "if (motors_online_) {\n      motor_fault_latched_ = false;\n    }",
+        "if (motor_fault_latched_) {\n"
+        "      ForceMotorFaultSafeState();\n"
+        "    }\n"
+        "    if (motors_online_) {\n"
+        "      motor_fault_latched_ = false;\n"
+        "    }",
     ),
     (
         "offline SetMode latch clear",
