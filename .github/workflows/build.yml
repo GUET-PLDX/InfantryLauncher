@@ -82,6 +82,12 @@ jobs:
           repository: QDU-Robomaster/Referee
           path: Modules/Referee
 
+      - name: Checkout NavLinkProtocol module
+        uses: actions/checkout@v4
+        with:
+          repository: GUET-PLDX/NavLinkProtocol
+          path: Modules/NavLinkProtocol
+
       - name: Setup Python & Install deps
         run: |
           python3 -m pip install --upgrade pip

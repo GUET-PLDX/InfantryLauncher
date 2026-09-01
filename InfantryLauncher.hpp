@@ -46,6 +46,11 @@ constructor_args:
       bullet_speed_tolerance: 1.5
       trig_gear_ratio: 36.0
       num_trig_tooth: 10
+  - heat_control_enabled: true
+  - single_heat: 10.0
+  - max_frequency: 15.0
+  - burst_duration: 2.0
+  - heat_margin: 10.0
   - cmd: '@&cmd'
   - referee: '@nullptr'
   - thread_priority: LibXR::Thread::Priority::HIGH
@@ -55,6 +60,7 @@ required_hardware:
 depends:
   - pldx/CMD
   - pldx/RMMotor
+  - pldx/NavLinkProtocol
 === END MANIFEST === */
 // clang-format on
 
@@ -65,7 +71,9 @@ depends:
 #include <cstring>
 
 #include "CMD.hpp"
+#include "HeatFeedforward.hpp"
 #include "Motor.hpp"
+#include "NavLinkProtocol.hpp"
 #include "RMMotor.hpp"
 #include "Referee.hpp"
 #include "app_framework.hpp"
@@ -86,12 +94,12 @@ constexpr float TRIG_STEP = static_cast<float>(LibXR::TWO_PI) / 10.0f;
 constexpr float JAM_TORQUE = 0.028f;
 constexpr float JAM_TOGGLE_INTERVAL_SEC = 0.1f;
 constexpr float LONG_PRESS_THRESHOLD_SEC = 0.5f;
-constexpr float HEAT_TICK_SEC = 0.05f;
+constexpr uint32_t HEAT_SETTLEMENT_PERIOD_MS = 100U;
 constexpr float SHOT_PROGRESS_EPSILON = 1e-4f;
 constexpr float TRIGGER_SETTLE_ANGLE = 0.2f * TRIG_STEP;
 constexpr float FRIC_READY_RPM_MARGIN = 200.0f;
 constexpr float FRIC_DROP_RPM = 150.0f;
-constexpr uint32_t LAUNCHER_REF_TIMEOUT_MS = 300;
+constexpr uint32_t ONLINE_INFO_TIMEOUT_MS = 300;
 }  // namespace launcher::param
 
 /**
@@ -140,12 +148,9 @@ class InfantryLauncher {
   };
 
   struct HeatLimit {
-    float single_heat;
     float launched_num;
     float current_heat;
-    float heat_threshold;
     bool allow_fire;
-    float merge;
   };
 
   InfantryLauncher(
@@ -155,7 +160,9 @@ class InfantryLauncher {
       LibXR::PID<float>::Param pid_param_trig_speed,
       LibXR::PID<float>::Param pid_param_fric_speed_0,
       LibXR::PID<float>::Param pid_param_fric_speed_1,
-      LauncherParam launcher_param, CMD* cmd, Referee* referee = nullptr,
+      LauncherParam launcher_param, bool heat_control_enabled,
+      float single_heat, float max_frequency, float burst_duration,
+      float heat_margin, CMD* cmd, Referee* referee = nullptr,
       LibXR::Thread::Priority thread_priority = LibXR::Thread::Priority::HIGH)
       : motor_fric_0_(motor_fric_0),
         motor_fric_1_(motor_fric_1),
@@ -165,7 +172,13 @@ class InfantryLauncher {
         pid_fric_0_(pid_param_fric_speed_0),
         pid_fric_1_(pid_param_fric_speed_1),
         param_(launcher_param),
-        referee_(referee) {
+        heat_control_enabled_(heat_control_enabled),
+        heat_config_{single_heat, max_frequency, burst_duration, heat_margin},
+        referee_(referee),
+        feedback_topic_(
+            LibXR::Topic::CreateTopic<Pldx::NavLink::GimbalFeedbackV1>(
+                Pldx::NavLink::LAUNCHER_FEEDBACK_TOPIC, nullptr, true)) {
+    expect_trig_freq_ = max_frequency;
     UNUSED(hw);
     UNUSED(app);
 
@@ -232,10 +245,10 @@ class InfantryLauncher {
 
   static void ThreadFunc(InfantryLauncher* self) {
     LibXR::Topic::ASyncSubscriber<CMD::LauncherCMD> cmd_sub("launcher_cmd");
-    LibXR::Topic::ASyncSubscriber<Referee::LauncherPack> launcher_ref(
-        "launcher_ref");
+    LibXR::Topic::ASyncSubscriber<Pldx::NavLink::SentryInfoOnline>
+        online_info_sub(Pldx::NavLink::ONLINE_INFO_TOPIC);
     cmd_sub.StartWaiting();
-    launcher_ref.StartWaiting();
+    online_info_sub.StartWaiting();
     self->last_online_time_ = LibXR::Timebase::GetMicroseconds();
     while (true) {
       auto now = LibXR::Timebase::GetMicroseconds();
@@ -246,17 +259,21 @@ class InfantryLauncher {
         self->launcher_cmd_ = cmd_sub.GetData();
         cmd_sub.StartWaiting();
       }
-      if (launcher_ref.Available()) {
-        const auto ref_pack = launcher_ref.GetData();
-        self->last_launcher_ref_rx_time_ms_ =
-            LibXR::Timebase::GetMilliseconds();
-        self->launcher_ref_valid_ = true;
-        self->ref_data_.heat_limit = ref_pack.rs.shooter_heat_limit;
-        self->ref_data_.cooling_rate = ref_pack.rs.shooter_cooling_value;
-        self->ref_data_.current_heat_17 = ref_pack.ph.launcher_id1_17_heat;
-        self->ref_data_.bullet_speed = ref_pack.ld.bullet_speed;
-        self->robot_level_ = ref_pack.rs.robot_level;
-        launcher_ref.StartWaiting();
+      if (online_info_sub.Available()) {
+        const auto online = online_info_sub.GetData();
+        self->online_info_valid_ = true;
+        self->last_online_info_rx_time_ms_ = LibXR::Timebase::GetMilliseconds();
+        self->heat_data_valid_ = online.heat_limit > 0U;
+        if (self->heat_data_valid_) {
+          self->ref_data_.heat_limit = static_cast<float>(online.heat_limit);
+          self->ref_data_.cooling_rate =
+              static_cast<float>(online.cooling_value);
+          self->ref_data_.current_heat_17 =
+              static_cast<float>(online.current_heat);
+        }
+        self->bullet_count_ = online.bullets_remaining;
+        self->bullet_count_valid_ = true;
+        online_info_sub.StartWaiting();
       }
       self->mutex_.Lock();
       self->Update();
@@ -265,6 +282,12 @@ class InfantryLauncher {
       }
       self->mutex_.Unlock();
       self->Control();
+      const auto now_ms =
+          static_cast<uint32_t>(LibXR::Timebase::GetMilliseconds());
+      if (now_ms - self->last_feedback_publish_ms_ >= 10U) {
+        self->PublishFeedback();
+        self->last_feedback_publish_ms_ = now_ms;
+      }
       LibXR::Thread::Sleep(2);
     }
   }
@@ -480,6 +503,7 @@ class InfantryLauncher {
   RMMotor* motor_fric_0_;
   RMMotor* motor_fric_1_;
   RMMotor* motor_trig_;
+  LibXR::Topic feedback_topic_;
   float last_trig_angle_ = 0.0f;
   Motor::Feedback param_fric_0_{};
   Motor::Feedback param_fric_1_{};
@@ -494,11 +518,12 @@ class InfantryLauncher {
   LibXR::PID<float> pid_fric_1_;
 
   LauncherParam param_;
+  bool heat_control_enabled_ = true;
+  launcher::HeatFeedforwardConfig heat_config_{};
   Referee* referee_ = nullptr;
   LibXR::Event launcher_event;
   LibXR::Thread thread_;
   LibXR::Timer::TimerHandle timer_ui_{};
-  uint8_t robot_level_ = 5;
 
   float out_trig_ = 0.0f;
 
@@ -525,7 +550,8 @@ class InfantryLauncher {
   bool trigger_step_active_ = false;
   bool calibrated_ = false;
   bool calibration_pending_ = false;
-  bool launcher_ref_valid_ = false;
+  bool online_info_valid_ = false;
+  bool heat_data_valid_ = false;
   bool ui_layer_cleared_ = false;
   bool ui_fric_text_initialized_ = false;
   bool ui_fire_mode_text_initialized_ = false;
@@ -533,15 +559,17 @@ class InfantryLauncher {
   bool motors_online_ = false;
   bool motor_fault_latched_ = false;
   uint32_t ui_refresh_tick_ = 0;
+  uint32_t last_feedback_publish_ms_ = 0U;
+  uint16_t bullet_count_ = 0U;
+  bool bullet_count_valid_ = false;
 
   float shot_progress_ = 0.0f;
 
   LibXR::MillisecondTimestamp fire_press_time_ = 0;
   LibXR::MillisecondTimestamp last_trig_time_ = 0;
   LibXR::MillisecondTimestamp last_jam_time_ = 0;
-  LibXR::MillisecondTimestamp last_heat_time_ = 0;
   LibXR::MillisecondTimestamp last_check_time_ = 0;
-  LibXR::MillisecondTimestamp last_launcher_ref_rx_time_ms_ = 0;
+  LibXR::MillisecondTimestamp last_online_info_rx_time_ms_ = 0;
   LibXR::MicrosecondTimestamp last_online_time_ = 0;
 
   LauncherEvent launcher_event_ = LauncherEvent::SET_FRICMODE_RELAX;
@@ -550,14 +578,27 @@ class InfantryLauncher {
   TrigMode last_trig_mode_ = TrigMode::RELAX;
 
   HeatLimit heat_limit_{
-      .single_heat = 10.0f,
       .launched_num = 0.0f,
       .current_heat = 0.0f,
-      .heat_threshold = 6.0f,
       .allow_fire = true,
-      .merge = 0.0f,
   };
   LibXR::Mutex mutex_;
+
+  void PublishFeedback() {
+    LibXR::Mutex::LockGuard lock(mutex_);
+    const auto now = LibXR::Timebase::GetMilliseconds();
+    Pldx::NavLink::GimbalFeedbackV1 feedback{};
+    feedback.bullet_speed_mps = ref_data_.bullet_speed;
+    feedback.bullet_count = bullet_count_;
+    if (IsOnlineInfoFresh(now) && std::isfinite(feedback.bullet_speed_mps) &&
+        feedback.bullet_speed_mps > 0.0F) {
+      feedback.valid_flags |= Pldx::NavLink::GIMBAL_BULLET_SPEED_VALID;
+    }
+    if (bullet_count_valid_ && IsOnlineInfoFresh(now)) {
+      feedback.valid_flags |= Pldx::NavLink::GIMBAL_BULLET_COUNT_VALID;
+    }
+    feedback_topic_.Publish(feedback);
+  }
 
   void ForceMotorFaultSafeState() {
     launcher_cmd_.isfire = false;
@@ -592,7 +633,7 @@ class InfantryLauncher {
 
   void RunStateMachine() {
     auto now = LibXR::Timebase::GetMilliseconds();
-    UpdateLauncherRefFreshness(now);
+    UpdateOnlineInfoFreshness(now);
     CurrentHeat(now);
     UpdateHeatControl(now);
     UpdateLauncherState();
@@ -602,18 +643,24 @@ class InfantryLauncher {
     last_fire_notify_ = launcher_cmd_.isfire;
   }
 
-  bool IsLauncherRefFresh(LibXR::MillisecondTimestamp now) const {
-    return launcher_ref_valid_ &&
-           (now - last_launcher_ref_rx_time_ms_).ToMillisecond() <=
-               launcher::param::LAUNCHER_REF_TIMEOUT_MS;
+  bool IsOnlineInfoFresh(LibXR::MillisecondTimestamp now) const {
+    return online_info_valid_ &&
+           (now - last_online_info_rx_time_ms_).ToMillisecond() <=
+               launcher::param::ONLINE_INFO_TIMEOUT_MS;
   }
 
-  void UpdateLauncherRefFreshness(LibXR::MillisecondTimestamp now) {
-    if (IsLauncherRefFresh(now)) {
+  void UpdateOnlineInfoFreshness(LibXR::MillisecondTimestamp now) {
+    if (!heat_control_enabled_) {
+      heat_limit_.allow_fire = true;
+      trig_freq_ = expect_trig_freq_;
+      return;
+    }
+    if (IsOnlineInfoFresh(now) && heat_data_valid_) {
       return;
     }
 
-    launcher_ref_valid_ = false;
+    online_info_valid_ = false;
+    heat_data_valid_ = false;
     ref_data_ = RefereeData{};
     heat_limit_.allow_fire = false;
     trig_freq_ = 0.0f;
@@ -714,7 +761,7 @@ class InfantryLauncher {
         target_trig_angle_ = indexed_target();
         heat_limit_.current_heat =
             std::max(heat_limit_.current_heat, ref_data_.current_heat_17) +
-            heat_limit_.single_heat;
+            heat_config_.single_heat;
         shot_progress_ = 0.0f;
         last_trig_angle_ = trig_angle_;
       }
@@ -737,10 +784,12 @@ class InfantryLauncher {
 
       const float current_heat =
           std::max(heat_limit_.current_heat, ref_data_.current_heat_17);
-      const float shot_heat =
-          heat_limit_.single_heat * static_cast<float>(shot_count_);
-      if (ref_data_.heat_limit <= 0.0f ||
-          current_heat + shot_heat + heat_limit_.merge > ref_data_.heat_limit) {
+      const auto heat_decision = launcher::HeatFeedforward::Calculate(
+          heat_config_,
+          {ref_data_.heat_limit, current_heat, ref_data_.cooling_rate,
+           heat_data_valid_ && IsOnlineInfoFresh(now)},
+          shot_count_);
+      if (heat_control_enabled_ && !heat_decision.allow_fire) {
         return;
       }
 
@@ -816,14 +865,16 @@ class InfantryLauncher {
         target_rpm_ = 0.0f;
         break;
       case LauncherEvent::SET_FRICMODE_READY: {
-        if (!launcher_ref_valid_) {
+        if (heat_control_enabled_ &&
+            (!IsOnlineInfoFresh(LibXR::Timebase::GetMilliseconds()) ||
+             !heat_data_valid_)) {
           target_rpm_ = 0.0f;
           break;
         }
 
         // 根据裁判系统回传弹速微调摩擦轮期望转速
         float bullet_speed = ref_data_.bullet_speed;
-        if (bullet_speed < 0.0f || bullet_speed > 30.0f) {
+        if (bullet_speed <= 0.0f || bullet_speed > 30.0f) {
           bullet_speed =
               param_.target_bullet_speed - 2.0f * param_.bullet_speed_tolerance;
         }
@@ -852,40 +903,22 @@ class InfantryLauncher {
   }
 
   void UpdateHeatControl(LibXR::MillisecondTimestamp now) {
-    float delta_time = (now - last_heat_time_).ToSecondf();
-
-    if (delta_time < launcher::param::HEAT_TICK_SEC) {
+    if (!heat_control_enabled_) {
+      heat_limit_.allow_fire = true;
+      trig_freq_ = expect_trig_freq_;
       return;
     }
-    last_heat_time_ = now;
-
-    float current_heat =
+    const float current_heat =
         std::max(heat_limit_.current_heat, ref_data_.current_heat_17);
-    float residuary_heat =
-        ref_data_.heat_limit - current_heat - heat_limit_.merge;
-    heat_limit_.allow_fire = ref_data_.heat_limit > 0.0f &&
-                             residuary_heat >= heat_limit_.single_heat;
-
-    if (!heat_limit_.allow_fire) {
-      trig_freq_ = 0.0f;
-      return;
-    }
-
-    if (residuary_heat <=
-        heat_limit_.single_heat * heat_limit_.heat_threshold) {
-      float safe_freq = ref_data_.cooling_rate / heat_limit_.single_heat;
-      float ratio = residuary_heat /
-                    (heat_limit_.single_heat * heat_limit_.heat_threshold);
-      trig_freq_ = ratio * (expect_trig_freq_ - safe_freq) + safe_freq;
-      return;
-    }
-
-    trig_freq_ = expect_trig_freq_;
+    const auto decision = launcher::HeatFeedforward::Calculate(
+        heat_config_,
+        {ref_data_.heat_limit, current_heat, ref_data_.cooling_rate,
+         heat_data_valid_ && IsOnlineInfoFresh(now)});
+    heat_limit_.allow_fire = decision.allow_fire;
+    trig_freq_ = decision.target_frequency;
   }
 
   void CurrentHeat(LibXR::MillisecondTimestamp now) {
-    float delta_time = (now - last_check_time_).ToSecondf();
-
     if (!heat_initialized_) {
       heat_initialized_ = true;
       last_check_time_ = now;
@@ -893,17 +926,9 @@ class InfantryLauncher {
       return;
     }
 
-    last_check_time_ = now;
-    heat_limit_.launched_num = 0.0f;
-
-    if (delta_time > 0.0f) {
-      heat_limit_.current_heat -= ref_data_.cooling_rate * delta_time;
-    }
-    if (heat_limit_.current_heat <= 0.0f) {
-      heat_limit_.current_heat = 0.0f;
-    }
     heat_limit_.current_heat =
         std::max(heat_limit_.current_heat, ref_data_.current_heat_17);
+    heat_limit_.launched_num = 0.0f;
 
     float delta_teeth =
         (trig_angle_ - last_trig_angle_) / launcher::param::TRIG_STEP;
@@ -918,11 +943,21 @@ class InfantryLauncher {
       shot_progress_ = 0.0f;
     }
 
-    if (shot_progress_ >= 1.0f - launcher::param::SHOT_PROGRESS_EPSILON) {
+    if (calibrated_ &&
+        shot_progress_ >= 1.0f - launcher::param::SHOT_PROGRESS_EPSILON) {
       heat_limit_.launched_num = floorf(shot_progress_);
       shot_progress_ -= heat_limit_.launched_num;
-      heat_limit_.current_heat +=
-          heat_limit_.single_heat * heat_limit_.launched_num;
+    }
+
+    const auto elapsed_ms = (now - last_check_time_).ToMillisecond();
+    const uint32_t periods =
+        elapsed_ms / launcher::param::HEAT_SETTLEMENT_PERIOD_MS;
+    heat_limit_.current_heat = launcher::HeatFeedforward::AdvanceBudget(
+        heat_config_, heat_limit_.current_heat, ref_data_.cooling_rate,
+        static_cast<uint32_t>(heat_limit_.launched_num), periods);
+    if (periods > 0U) {
+      last_check_time_ += LibXR::MillisecondTimestamp(
+          periods * launcher::param::HEAT_SETTLEMENT_PERIOD_MS);
     }
   }
 
