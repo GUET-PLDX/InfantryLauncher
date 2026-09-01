@@ -956,7 +956,8 @@ class InfantryLauncher {
         heat_config_, heat_limit_.current_heat, ref_data_.cooling_rate,
         static_cast<uint32_t>(heat_limit_.launched_num), periods);
     if (periods > 0U) {
-      last_check_time_ += LibXR::MillisecondTimestamp(
+      last_check_time_ = LibXR::MillisecondTimestamp(
+          static_cast<uint32_t>(last_check_time_) +
           periods * launcher::param::HEAT_SETTLEMENT_PERIOD_MS);
     }
   }
