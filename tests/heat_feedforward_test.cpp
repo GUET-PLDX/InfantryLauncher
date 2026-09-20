@@ -1,7 +1,7 @@
+#include "heat_feedforward.inc"
+
 #include <cassert>
 #include <cmath>
-
-#include "../HeatFeedforward.hpp"
 
 int main() {
   using namespace launcher;

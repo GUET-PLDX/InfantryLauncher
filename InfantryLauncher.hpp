@@ -71,7 +71,6 @@ depends:
 #include <cstring>
 
 #include "CMD.hpp"
-#include "HeatFeedforward.hpp"
 #include "Motor.hpp"
 #include "NavLinkProtocol.hpp"
 #include "RMMotor.hpp"
@@ -89,6 +88,83 @@ depends:
 #include "timebase.hpp"
 #include "timer.hpp"
 
+namespace launcher {
+
+constexpr float HEAT_SETTLEMENT_PERIOD_SEC = 0.1f;
+constexpr float PERIODS_PER_SECOND = 10.0f;
+
+struct HeatFeedforwardConfig {
+  float single_heat = 10.0f;
+  float max_frequency = 15.0f;
+  float burst_duration = 2.0f;
+  float heat_margin = 10.0f;
+};
+
+struct HeatFeedforwardObservation {
+  float heat_limit = 0.0f;
+  float current_heat = 0.0f;
+  float cooling_rate = 0.0f;
+  bool data_valid = false;
+};
+
+struct HeatFeedforwardResult {
+  bool allow_fire = false;
+  float target_frequency = 0.0f;
+};
+
+// PDF model: each 100 ms period settles shots first, then cooling.
+class HeatFeedforward {
+ public:
+  static float AdvanceBudget(const HeatFeedforwardConfig& config,
+                             float current_heat, float cooling_rate,
+                             unsigned int launched_shots,
+                             unsigned int completed_periods) {
+    if (!std::isfinite(current_heat) || !std::isfinite(cooling_rate) ||
+        !std::isfinite(config.single_heat) || config.single_heat <= 0.0f ||
+        cooling_rate < 0.0f) {
+      return current_heat;
+    }
+    const float settled_heat =
+        current_heat + config.single_heat * static_cast<float>(launched_shots);
+    return std::max(0.0f,
+                    settled_heat - cooling_rate * HEAT_SETTLEMENT_PERIOD_SEC *
+                                       static_cast<float>(completed_periods));
+  }
+
+  static HeatFeedforwardResult Calculate(
+      const HeatFeedforwardConfig& config,
+      const HeatFeedforwardObservation& observation,
+      unsigned int shot_count = 1U) {
+    const float d = config.single_heat;
+    const float n =
+        std::ceil(config.burst_duration / HEAT_SETTLEMENT_PERIOD_SEC);
+    if (!observation.data_valid || !std::isfinite(d) || d <= 0.0f ||
+        !std::isfinite(n) || n <= 0.0f ||
+        !std::isfinite(config.max_frequency) || config.max_frequency <= 0.0f ||
+        !std::isfinite(config.heat_margin) || config.heat_margin < 0.0f ||
+        !std::isfinite(observation.heat_limit) ||
+        !std::isfinite(observation.current_heat) ||
+        !std::isfinite(observation.cooling_rate) ||
+        observation.heat_limit <= 0.0f || observation.cooling_rate < 0.0f ||
+        shot_count == 0U) {
+      return {};
+    }
+    const float remaining =
+        observation.heat_limit - observation.current_heat - config.heat_margin;
+    if (remaining < d * static_cast<float>(shot_count)) {
+      return {};
+    }
+    const float sustainable = observation.cooling_rate / d;
+    const float burst =
+        (PERIODS_PER_SECOND * remaining - observation.cooling_rate) / (d * n) +
+        sustainable;
+    const float lower_frequency = std::min(sustainable, config.max_frequency);
+    return {true, std::clamp(burst, lower_frequency, config.max_frequency)};
+  }
+};
+
+}  // namespace launcher
+
 namespace launcher::param {
 constexpr float TRIG_STEP = static_cast<float>(LibXR::TWO_PI) / 10.0f;
 constexpr float JAM_TORQUE = 0.028f;
@@ -104,7 +180,8 @@ constexpr uint32_t ONLINE_INFO_TIMEOUT_MS = 300;
 
 /**
  * @brief 步兵发射机构实现
- * @details 负责摩擦轮、拨弹盘控制与热量约束发射逻辑。
+ * @details
+ * 负责摩擦轮、拨弹盘控制与热量约束发射逻辑。
  */
 class InfantryLauncher {
  public:
@@ -167,6 +244,9 @@ class InfantryLauncher {
       : motor_fric_0_(motor_fric_0),
         motor_fric_1_(motor_fric_1),
         motor_trig_(motor_trig),
+        feedback_topic_(
+            LibXR::Topic::CreateTopic<Pldx::NavLink::GimbalFeedbackV1>(
+                Pldx::NavLink::LAUNCHER_FEEDBACK_TOPIC, nullptr, true)),
         pid_trig_angle_(pid_param_trig_angle),
         pid_trig_sp_(pid_param_trig_speed),
         pid_fric_0_(pid_param_fric_speed_0),
@@ -174,10 +254,7 @@ class InfantryLauncher {
         param_(launcher_param),
         heat_control_enabled_(heat_control_enabled),
         heat_config_{single_heat, max_frequency, burst_duration, heat_margin},
-        referee_(referee),
-        feedback_topic_(
-            LibXR::Topic::CreateTopic<Pldx::NavLink::GimbalFeedbackV1>(
-                Pldx::NavLink::LAUNCHER_FEEDBACK_TOPIC, nullptr, true)) {
+        referee_(referee) {
     expect_trig_freq_ = max_frequency;
     UNUSED(hw);
     UNUSED(app);
@@ -201,19 +278,7 @@ class InfantryLauncher {
         },
         this);
 
-    auto start_ctrl_callback = LibXR::Callback<uint32_t>::Create(
-        [](bool in_isr, InfantryLauncher* self, uint32_t event_id) {
-          UNUSED(in_isr);
-          UNUSED(event_id);
-          self->mutex_.Lock();
-          self->SetMode(
-              static_cast<uint32_t>(LauncherEvent::SET_FRICMODE_RELAX));
-          self->mutex_.Unlock();
-        },
-        this);
-
     cmd->GetEvent().Register(CMD::CMD_EVENT_LOST_CTRL, lost_ctrl_callback);
-    cmd->GetEvent().Register(CMD::CMD_EVENT_START_CTRL, start_ctrl_callback);
 
     auto event_callback = LibXR::Callback<uint32_t>::Create(
         [](bool in_isr, InfantryLauncher* self, uint32_t event_id) {
@@ -250,6 +315,7 @@ class InfantryLauncher {
     cmd_sub.StartWaiting();
     online_info_sub.StartWaiting();
     self->last_online_time_ = LibXR::Timebase::GetMicroseconds();
+    auto last_time = LibXR::Timebase::GetMilliseconds();
     while (true) {
       auto now = LibXR::Timebase::GetMicroseconds();
       self->dt_ = (now - self->last_online_time_).ToSecondf();
@@ -288,7 +354,7 @@ class InfantryLauncher {
         self->PublishFeedback();
         self->last_feedback_publish_ms_ = now_ms;
       }
-      LibXR::Thread::Sleep(2);
+      LibXR::Thread::SleepUntil(last_time, 1);
     }
   }
 
