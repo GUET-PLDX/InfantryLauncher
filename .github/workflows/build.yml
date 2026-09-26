@@ -82,11 +82,11 @@ jobs:
           repository: QDU-Robomaster/Referee
           path: Modules/Referee
 
-      - name: Checkout NavLinkProtocol module
+      - name: Checkout NavHostData module
         uses: actions/checkout@v4
         with:
-          repository: GUET-PLDX/NavLinkProtocol
-          path: Modules/NavLinkProtocol
+          repository: GUET-PLDX/NavHostData
+          path: Modules/NavHostData
 
       - name: Setup Python & Install deps
         run: |

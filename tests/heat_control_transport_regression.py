@@ -6,8 +6,8 @@ SOURCE = HEADER.read_text(encoding="utf-8")
 
 
 required = (
-    "bool heat_control_enabled",
-    "heat_control_enabled_(heat_control_enabled)",
+    "const bool HEAT_CONTROL_ENABLED",
+    "HEAT_CONTROL_ENABLED(heat_control_enabled)",
     "Pldx::NavLink::SentryInfoOnline",
     "Pldx::NavLink::ONLINE_INFO_TOPIC",
     "launcher::param::ONLINE_INFO_TIMEOUT_MS",
@@ -16,11 +16,11 @@ required = (
     "online.current_heat",
     "online.bullets_remaining",
     "void UpdateOnlineInfoFreshness",
-    "if (!heat_control_enabled_)",
-    "heat_limit_.allow_fire = true;",
-    "trig_freq_ = expect_trig_freq_;",
-    "if (heat_control_enabled_ && !heat_decision.allow_fire)",
-    "if (calibrated_ &&",
+    "if (!HEAT_CONTROL_ENABLED)",
+    "heat_.limit.allow_fire = true;",
+    "trig_.freq = trig_.expect_freq;",
+    "if (HEAT_CONTROL_ENABLED && !heat_.limit.allow_fire)",
+    "if (trig_.calibrated &&",
 )
 
 missing = [item for item in required if item not in SOURCE]

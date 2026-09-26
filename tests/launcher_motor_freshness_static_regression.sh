@@ -45,94 +45,61 @@ def validate(source):
     thread = function_body(source, "ThreadFunc")
     control = function_body(source, "Control")
     set_mode = function_body(source, "SetMode")
-    safe_state = function_body(source, "ForceMotorFaultSafeState")
 
     status_updates = (
-        "motor_fric_0_status_ = motor_fric_0_->Update();",
-        "motor_fric_1_status_ = motor_fric_1_->Update();",
-        "motor_trig_status_ = motor_trig_->Update();",
+        "motors_.fric_0_status = motors_.fric_0->Update();",
+        "motors_.fric_1_status = motors_.fric_1->Update();",
+        "motors_.trig_status = motors_.trig->Update();",
     )
     for status_update in status_updates:
         require("persistent per-motor ErrorCode", status_update, update)
 
     require(
-        "all-motor freshness conjunction",
-        "motors_online_ = motor_fric_0_status_ == LibXR::ErrorCode::OK && "
-        "motor_fric_1_status_ == LibXR::ErrorCode::OK && "
-        "motor_trig_status_ == LibXR::ErrorCode::OK;",
-        update,
-    )
-    require(
-        "fault transition latch",
-        "if (!motors_online_ && !motor_fault_latched_) { "
-        "motor_fault_latched_ = true;",
-        update,
-    )
-    require(
-        "latched safe-state enforcement",
-        "if (motor_fault_latched_) { ForceMotorFaultSafeState(); }",
-        update,
-    )
-    if re.search(r"\bmotor_fault_latched_\s*=\s*false\s*;", update):
-        raise ContractError("Update() must not clear the motor fault latch")
-    if "XR_LOG_" in update:
-        raise ContractError("periodic Update() diagnostics are forbidden")
-
-    require(
-        "state-machine suppression while fault is latched",
-        "if (!self->motor_fault_latched_) { self->RunStateMachine(); }",
-        thread,
-    )
-
-    guard = re.match(
-        r"if \(!motors_online_ \|\| motor_fault_latched_\) \{(.*?)\}",
+        "trigger output re-derived every cycle",
+        "float out_trig = 0.0f;",
         control,
     )
-    if guard is None:
-        raise ContractError("Control() must begin with the online and latch guard")
-    expected_guard = (
-        "out_trig_ = 0.0f; motor_trig_->Relax(); motor_fric_0_->Relax(); "
-        "motor_fric_1_->Relax(); return;"
-    )
-    if compact(guard.group(1)) != expected_guard:
-        raise ContractError("fault guard must relax all motors and return")
-
     require(
-        "offline SetMode rejection",
-        "if (motor_fault_latched_) { if (!motors_online_) { return; } "
-        "motor_fault_latched_ = false; }",
+        "trigger activation derived from mode, freshness and state",
+        "const bool TRIG_ACTIVE = !relax && TRIG_ONLINE && "
+        "state_.mode != TrigMode::RELAX;",
+        control,
+    )
+    require(
+        "trigger law runs only when active",
+        "if (TRIG_ACTIVE) { TrigControl(out_trig, trig_.target_angle, dt_); }",
+        control,
+    )
+    require(
+        "inactive trigger stays relaxed",
+        "if (!TRIG_ACTIVE) { motors_.trig->Relax(); }",
+        control,
+    )
+    require(
+        "offline friction wheels stay relaxed",
+        "if (!FRIC_0_ONLINE || !FRIC_1_ONLINE) "
+        "{ motors_.fric_0->Relax(); motors_.fric_1->Relax(); }",
+        control,
+    )
+    require(
+        "state machine runs unconditionally",
+        "self->RunStateMachine();",
+        thread,
+    )
+    require(
+        "SetMode keeps mode handling",
+        "auto event = static_cast<LauncherEvent>(mode);",
         set_mode,
     )
-    if set_mode.index("motor_fault_latched_ = false;") > set_mode.index(
-        "auto event = static_cast<LauncherEvent>(mode);"
-    ):
-        raise ContractError("fresh SetMode must clear the latch before mode handling")
 
-    for safe_write in (
-        "launcher_cmd_.isfire = false;",
-        "launcher_event_ = LauncherEvent::SET_FRICMODE_RELAX;",
-        "launcher_state_ = LauncherState::RELAX;",
-        "trig_mode_ = TrigMode::RELAX;",
-        "out_trig_ = 0.0f;",
-        "target_rpm_ = 0.0f;",
+    for banned in (
+        "motor_fault_latched_",
+        "motors_online_",
+        "ForceMotorFaultSafeState",
+        "out_trig_",
     ):
-        require("fault safe-state write", safe_write, safe_state)
-
-    for status in (
-        "motor_fric_0_status_",
-        "motor_fric_1_status_",
-        "motor_trig_status_",
-    ):
-        require(
-            "diagnostic ErrorCode member",
-            f"LibXR::ErrorCode {status} = LibXR::ErrorCode::FAILED;",
-            compact(source),
-        )
-    require(
-        "fault latch member",
-        "bool motor_fault_latched_ = false;",
-        compact(source),
-    )
+        if banned in source:
+            raise ContractError(f"stale-output symbol reappeared: {banned}")
 
 
 source = pathlib.Path(sys.argv[1]).read_text()
@@ -140,39 +107,51 @@ validate(source)
 
 mutations = (
     (
-        "automatic online latch clear",
-        "if (motor_fault_latched_) {\n      ForceMotorFaultSafeState();\n    }",
-        "if (motor_fault_latched_) {\n"
-        "      ForceMotorFaultSafeState();\n"
-        "    }\n"
-        "    if (motors_online_) {\n"
-        "      motor_fault_latched_ = false;\n"
-        "    }",
+        "per-motor trigger relax dropped",
+        "    if (!TRIG_ACTIVE) {\n      motors_.trig->Relax();\n    }",
+        "    motors_.trig->Relax();",
     ),
     (
-        "offline SetMode latch clear",
-        "if (!motors_online_) {\n        return;\n      }",
-        "if (motors_online_) {\n        return;\n      }",
+        "trigger activation ignores mode and freshness",
+        "    const bool TRIG_ACTIVE =\n        !relax && TRIG_ONLINE && state_.mode != TrigMode::RELAX;",
+        "    const bool TRIG_ACTIVE = !relax && TRIG_ONLINE;",
     ),
     (
-        "fresh SetMode does not clear latch",
-        "motor_fault_latched_ = false;\n    }\n\n    auto event",
-        "motor_fault_latched_ = true;\n    }\n\n    auto event",
+        "trigger law runs while inactive",
+        "      if (TRIG_ACTIVE) {\n        TrigControl(out_trig, trig_.target_angle, dt_);\n      }",
+        "      TrigControl(out_trig, trig_.target_angle, dt_);",
     ),
     (
-        "state machine runs while faulted",
-        "if (!self->motor_fault_latched_) {\n        self->RunStateMachine();\n      }",
-        "self->RunStateMachine();",
+        "stale member output reintroduced",
+        "    float out_trig = 0.0f;",
+        "    out_trig_ = 0.0f;",
     ),
     (
-        "Control ignores latched fault",
-        "if (!motors_online_ || motor_fault_latched_)",
-        "if (!motors_online_)",
+        "offline friction wheels commanded",
+        "    if (!FRIC_0_ONLINE || !FRIC_1_ONLINE) {",
+        "    if (false) {",
+    ),
+    (
+        "all-motor latch reintroduced",
+        "    motors_.trig_status = motors_.trig->Update();",
+        "    motors_.trig_status = motors_.trig->Update();\n\n"
+        "    if (!motors_online_ && !motor_fault_latched_) {\n"
+        "      motor_fault_latched_ = true;\n    }",
+    ),
+    (
+        "state machine suppressed while a motor is offline",
+        "      self->RunStateMachine();",
+        "      if (!self->motors_online_) {\n        self->RunStateMachine();\n      }",
+    ),
+    (
+        "SetMode offline rejection reintroduced",
+        "  void SetMode(uint32_t mode) {\n    auto event",
+        "  void SetMode(uint32_t mode) {\n    if (!motors_online_) {\n      return;\n    }\n\n    auto event",
     ),
     (
         "trigger diagnostic status discarded",
-        "motor_trig_status_ = motor_trig_->Update();",
-        "motor_trig_->Update();",
+        "motors_.trig_status = motors_.trig->Update();",
+        "motors_.trig->Update();",
     ),
 )
 
@@ -185,5 +164,5 @@ for description, old, new in mutations:
         continue
     raise ContractError(f"mutation survived: {description}")
 
-print("PASS: InfantryLauncher motor freshness latch contracts and mutations")
+print("PASS: InfantryLauncher per-cycle output derivation contracts and mutations")
 PY

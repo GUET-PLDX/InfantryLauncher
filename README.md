@@ -8,15 +8,28 @@ when online-info heat data is invalid or stale. Set it to `false` only for
 controlled testing; this bypasses heat limiting and freshness checks while
 retaining motor fault and friction-wheel readiness protection.
 
-The feedforward parameters are `single_heat` (heat per projectile),
-`max_frequency` (rounds/s), `burst_duration` (seconds to preserve the requested
-burst), and `heat_margin` (reserved heat). Defaults are 10, 15, 2.0, and 10.
-Invalid values, including a negative heat margin, fail closed.
-For remaining usable heat `R`, cooling rate `a`, single-shot heat `d`, and
-`n = ceil(burst_duration / 0.1)`, the target frequency is bounded by
-`(10R-a)/(d*n)+a/d`, clamped between the sustainable `a/d` and the configured
-maximum. Less than one shot of usable heat denies firing; a three-shot command
-must have the full three-shot budget before trigger motion starts.
+The heat controller parameters are `single_heat` (heat per projectile, `d`)
+and `max_frequency` (rounds/s, the full-rate ceiling). Default values are 10
+and 15; a non-positive `single_heat` fails closed.
+
+The rate scheduler is a faithful port of the rmcod2026 sentry `Fire_Ctrl`
+algorithm, stepped at 1 kHz on the launcher thread. With remaining heat
+`m = heat_limit - current_heat` and cooling rate `a` (both from referee data):
+
+- `m > 100`: full rate, target frequency = `max_frequency`.
+- `20 < m <= 100`: burst/sustainable scheduling. On burst-window open the
+  window length `shoot_time = (m + 2a) * 10` ms (clamped to 100–5600 ms) and
+  the burst rate `(d*m - a - k*d) / (d * shoot_time/100) + a/d` are fixed at
+  once (`k = 3` for `m < 50`, else `k = 7`). After the window elapses the rate
+  falls back to the sustainable `a/d` (zero when below 1). With `m >= 40` a
+  new window opens from fresh heat once the count elapses; with `m <= 25` the
+  scheduler latches the sustainable rate; between 25 and 40 it holds it until
+  heat recovers.
+- `m <= 20`: firing denied.
+
+Compared with the source, the `m == 100` exact-equality fall-through gap of
+the original else-if chain is closed, and the stop threshold is the
+chain-effective value 20.
 
 The local prediction applies cooling only at completed 100 ms referee
 settlement boundaries. Shots detected from trigger-wheel progress are charged
