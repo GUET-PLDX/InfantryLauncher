@@ -2,15 +2,16 @@
 
 The launcher consumes the native `online_info` topic (`SentryInfoOnline`) for
 the referee cooling rate, heat limit, remaining 17 mm heat, and remaining
-projectiles. Set `heat_control_enabled: true` in the module constructor
-arguments to enable dynamic trigger-frequency limiting and fail-closed behavior
-when online-info heat data is invalid or stale. Set it to `false` only for
-controlled testing; this bypasses heat limiting and freshness checks while
+projectiles. Set `heat_control_enabled: true` in the `LauncherParam` module
+constructor argument to enable dynamic trigger-frequency limiting and fail-closed
+behavior when online-info heat data is invalid or stale. Set it to `false` only
+for controlled testing; this bypasses heat limiting and freshness checks while
 retaining motor fault and friction-wheel readiness protection.
 
-The heat controller parameters are `single_heat` (heat per projectile, `d`)
-and `max_frequency` (rounds/s, the full-rate ceiling). Default values are 10
-and 15; a non-positive `single_heat` fails closed.
+The heat controller parameters are grouped in the same `LauncherParam` argument
+as the ballistic parameters: `single_heat` (heat per projectile, `d`) and
+`max_frequency` (rounds/s, the full-rate ceiling). Default values are 10 and 15;
+a non-positive `single_heat` fails closed.
 
 The rate scheduler is a faithful port of the rmcod2026 sentry `Fire_Ctrl`
 algorithm, stepped at 1 kHz on the launcher thread. With remaining heat

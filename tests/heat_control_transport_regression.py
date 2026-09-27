@@ -6,20 +6,20 @@ SOURCE = HEADER.read_text(encoding="utf-8")
 
 
 required = (
-    "const bool HEAT_CONTROL_ENABLED",
-    "HEAT_CONTROL_ENABLED(heat_control_enabled)",
-    "Pldx::NavLink::SentryInfoOnline",
-    "Pldx::NavLink::ONLINE_INFO_TOPIC",
+    "bool heat_control_enabled;",
+    "heat_control_enabled: true",
+    "Pldx::NavHostData::SentryInfoOnline",
+    "Pldx::NavHostData::ONLINE_INFO_TOPIC",
     "launcher::param::ONLINE_INFO_TIMEOUT_MS",
     "online.heat_limit",
     "online.cooling_value",
     "online.current_heat",
     "online.bullets_remaining",
     "void UpdateOnlineInfoFreshness",
-    "if (!HEAT_CONTROL_ENABLED)",
+    "if (!PARAM.heat_control_enabled)",
     "heat_.limit.allow_fire = true;",
     "trig_.freq = trig_.expect_freq;",
-    "if (HEAT_CONTROL_ENABLED && !heat_.limit.allow_fire)",
+    "if (PARAM.heat_control_enabled && !heat_.limit.allow_fire)",
     "if (trig_.calibrated &&",
 )
 

@@ -40,15 +40,15 @@ constructor_args:
       i_limit: 0.0
       out_limit: 1.0
       cycle: false
-  - launcher_param:
+  - LauncherParam:
       fric1_setpoint_speed: 6500.0
       target_bullet_speed: 25.0
       bullet_speed_tolerance: 1.5
       trig_gear_ratio: 36.0
       num_trig_tooth: 10
-  - heat_control_enabled: true
-  - single_heat: 10.0
-  - max_frequency: 15.0
+      heat_control_enabled: true
+      single_heat: 10.0
+      max_frequency: 15.0
   - cmd: '@&cmd'
   - referee: '@nullptr'
   - thread_priority: LibXR::Thread::Priority::HIGH
@@ -216,13 +216,11 @@ class HeatCtrl {
 }  // namespace launcher
 
 namespace launcher::param {
-constexpr float TRIG_STEP = static_cast<float>(LibXR::TWO_PI) / 10.0f;
 constexpr float JAM_TORQUE = 0.028f;
 constexpr float JAM_TOGGLE_INTERVAL_SEC = 0.1f;
 constexpr float LONG_PRESS_THRESHOLD_SEC = 0.5f;
 constexpr uint32_t HEAT_SETTLEMENT_PERIOD_MS = 100U;
 constexpr float SHOT_PROGRESS_EPSILON = 1e-4f;
-constexpr float TRIGGER_SETTLE_ANGLE = 0.2f * TRIG_STEP;
 constexpr float FRIC_READY_RPM_MARGIN = 200.0f;
 constexpr float FRIC_DROP_RPM = 150.0f;
 constexpr uint32_t ONLINE_INFO_TIMEOUT_MS = 300;
@@ -272,6 +270,9 @@ class InfantryLauncher {
     float bullet_speed_tolerance;
     float trig_gear_ratio;
     uint8_t num_trig_tooth;
+    bool heat_control_enabled; /* 启用基于裁判剩余热量的分档弹频控制 */
+    float single_heat;         /* 单发热量消耗 */
+    float max_frequency;       /* 最大发射频率（全速档射频），单位 Hz */
   };
 
   struct HeatLimit {
@@ -287,13 +288,9 @@ class InfantryLauncher {
       LibXR::PID<float>::Param pid_param_trig_speed,
       LibXR::PID<float>::Param pid_param_fric_speed_0,
       LibXR::PID<float>::Param pid_param_fric_speed_1,
-      LauncherParam launcher_param, bool heat_control_enabled,
-      float single_heat, float max_frequency, CMD* cmd,
-      Referee* referee = nullptr,
+      LauncherParam launcher_param, CMD* cmd, Referee* referee = nullptr,
       LibXR::Thread::Priority thread_priority = LibXR::Thread::Priority::HIGH)
       : PARAM(launcher_param),
-        HEAT_CONTROL_ENABLED(heat_control_enabled),
-        HEAT_CONFIG{single_heat, max_frequency},
         motors_{
             .fric_0 = motor_fric_0, .fric_1 = motor_fric_1, .trig = motor_trig},
         pid_trig_angle_(pid_param_trig_angle),
@@ -304,7 +301,7 @@ class InfantryLauncher {
             LibXR::Topic::CreateTopic<Pldx::NavHostData::GimbalFeedbackV1>(
                 Pldx::NavHostData::LAUNCHER_FEEDBACK_TOPIC, nullptr, true)),
         referee_(referee) {
-    trig_.expect_freq = max_frequency;
+    trig_.expect_freq = PARAM.max_frequency;
     fric_.expect_rpm = PARAM.fric1_setpoint_speed;
     UNUSED(hw);
     UNUSED(app);
@@ -596,7 +593,7 @@ class InfantryLauncher {
   static constexpr uint32_t UI_FIGURE_READD_DIV = 60;
 
   /* === 状态分层（对齐 Gimbal/Omni 范式）===
-   * 1. PARAM / HEAT_CONTROL_ENABLED / HEAT_CONFIG  构造期配置，const；
+   * 1. PARAM  构造期配置（含热控开关与热量参数），const；
    * 2. motors_   执行器层：句柄 + 反馈 + 在线状态（错误码）；
    * 3. state_    模式层：外部事件 → 状态机 → 触发模式；
    * 4. trig_     拨弹盘子系统：步进/标定/卡弹/连发会话；
@@ -608,8 +605,6 @@ class InfantryLauncher {
    * 调试：watch 直接展开 launcher 对象按声明顺序查看。 */
 
   const LauncherParam PARAM;
-  const bool HEAT_CONTROL_ENABLED;
-  const launcher::HeatCtrl::Config HEAT_CONFIG;
 
   /* 执行器层（fb = 最近一次电机反馈，status = 最近一次 Update 结果） */
   struct Motors {
@@ -774,7 +769,7 @@ class InfantryLauncher {
   }
 
   void UpdateOnlineInfoFreshness(LibXR::MillisecondTimestamp now) {
-    if (!HEAT_CONTROL_ENABLED) {
+    if (!PARAM.heat_control_enabled) {
       heat_.limit.allow_fire = true;
       trig_.freq = trig_.expect_freq;
       return;
@@ -847,8 +842,19 @@ class InfantryLauncher {
     }
   }
 
+  /* 每发拨弹盘步进角 = 单圈 2π / 配置齿数。齿数的唯一数据源是
+   * PARAM.num_trig_tooth， 与 HeroLauncher 的 TWO_PI / num_trig_tooth
+   * 同构；不得再引入硬编码齿数。 */
+  float TrigStep() const {
+    return static_cast<float>(LibXR::TWO_PI) /
+           static_cast<float>(PARAM.num_trig_tooth);
+  }
+
+  /* 步进到位判定阈值：步进角的 20% */
+  float TriggerSettleAngle() const { return 0.2f * TrigStep(); }
+
   void UpdateTriggerSetpoint(LibXR::MillisecondTimestamp now) {
-    const float step = launcher::param::TRIG_STEP;
+    const float step = TrigStep();
     const float ready_rpm =
         fric_.expect_rpm - launcher::param::FRIC_READY_RPM_MARGIN;
     const float fric_speed = (fabsf(motors_.fric_0_fb.velocity) +
@@ -887,13 +893,13 @@ class InfantryLauncher {
         trig_.target_angle = indexed_target();
         heat_.limit.current_heat =
             std::max(heat_.limit.current_heat, ref_data_.current_heat_17) +
-            HEAT_CONFIG.single_heat;
+            PARAM.single_heat;
         trig_.progress = 0.0f;
         trig_.last_angle = trig_.angle;
       }
 
       float angle_error = fabsf(trig_.target_angle - trig_.angle);
-      if (angle_error <= launcher::param::TRIGGER_SETTLE_ANGLE) {
+      if (angle_error <= TriggerSettleAngle()) {
         trig_.step_active = false;
         if (trig_.calibration_pending && !trig_.calibrated) {
           trig_.calibration_pending = false;
@@ -905,7 +911,7 @@ class InfantryLauncher {
 
     auto start_shot = [&]() {
       /* 热量门控：UpdateHeatControl 已按 Fire_Ctrl 分档给出本周期允许射频 */
-      if (HEAT_CONTROL_ENABLED && !heat_.limit.allow_fire) {
+      if (PARAM.heat_control_enabled && !heat_.limit.allow_fire) {
         return;
       }
 
@@ -981,7 +987,7 @@ class InfantryLauncher {
         fric_.target_rpm = 0.0f;
         break;
       case LauncherEvent::SET_FRICMODE_READY: {
-        if (HEAT_CONTROL_ENABLED &&
+        if (PARAM.heat_control_enabled &&
             (!IsOnlineInfoFresh(LibXR::Timebase::GetMilliseconds()) ||
              !heat_.data_valid)) {
           fric_.target_rpm = 0.0f;
@@ -1018,8 +1024,13 @@ class InfantryLauncher {
     }
   }
 
+  /* 热控调度器配置视图：单发热量与射频上限直接取自 PARAM，避免重复状态 */
+  launcher::HeatCtrl::Config HeatConfig() const {
+    return {PARAM.single_heat, PARAM.max_frequency};
+  }
+
   void UpdateHeatControl(LibXR::MillisecondTimestamp now) {
-    if (!HEAT_CONTROL_ENABLED) {
+    if (!PARAM.heat_control_enabled) {
       heat_.limit.allow_fire = true;
       trig_.freq = trig_.expect_freq;
       return;
@@ -1027,7 +1038,7 @@ class InfantryLauncher {
     const float current_heat =
         std::max(heat_.limit.current_heat, ref_data_.current_heat_17);
     const auto decision = heat_ctrl_.Update(
-        HEAT_CONFIG,
+        HeatConfig(),
         {ref_data_.heat_limit, current_heat, ref_data_.cooling_rate,
          heat_.data_valid && IsOnlineInfoFresh(now)});
     heat_.limit.allow_fire = decision.allow_fire;
@@ -1046,8 +1057,7 @@ class InfantryLauncher {
         std::max(heat_.limit.current_heat, ref_data_.current_heat_17);
     heat_.limit.launched_num = 0.0f;
 
-    float delta_teeth =
-        (trig_.angle - trig_.last_angle) / launcher::param::TRIG_STEP;
+    float delta_teeth = (trig_.angle - trig_.last_angle) / TrigStep();
     trig_.last_angle = trig_.angle;
 
     if (state_.event == LauncherEvent::SET_FRICMODE_READY) {
@@ -1069,7 +1079,7 @@ class InfantryLauncher {
     const uint32_t periods =
         elapsed_ms / launcher::param::HEAT_SETTLEMENT_PERIOD_MS;
     heat_.limit.current_heat = launcher::HeatCtrl::AdvanceBudget(
-        HEAT_CONFIG, heat_.limit.current_heat, ref_data_.cooling_rate,
+        HeatConfig(), heat_.limit.current_heat, ref_data_.cooling_rate,
         static_cast<uint32_t>(heat_.limit.launched_num), periods);
     if (periods > 0U) {
       heat_.last_check_time = LibXR::MillisecondTimestamp(

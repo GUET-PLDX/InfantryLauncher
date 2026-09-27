@@ -41,6 +41,7 @@ def require(description, expected, body):
 
 
 def validate(source):
+    flat = compact(source)
     update = function_body(source, "Update")
     thread = function_body(source, "ThreadFunc")
     control = function_body(source, "Control")
@@ -91,6 +92,28 @@ def validate(source):
         "auto event = static_cast<LauncherEvent>(mode);",
         set_mode,
     )
+
+    require(
+        "trigger step is derived, not a literal",
+        "float TrigStep() const {",
+        flat,
+    )
+    require(
+        "trigger step reads the configured tooth count",
+        "static_cast<float>(PARAM.num_trig_tooth)",
+        flat,
+    )
+    require(
+        "settle threshold derives from the trigger step",
+        "float TriggerSettleAngle() const {",
+        flat,
+    )
+
+    for geometry in ("TRIG_STEP", "TRIGGER_SETTLE_ANGLE"):
+        if geometry in source:
+            raise ContractError(
+                f"hardcoded trigger geometry constant reappeared: {geometry}"
+            )
 
     for banned in (
         "motor_fault_latched_",
@@ -152,6 +175,11 @@ mutations = (
         "trigger diagnostic status discarded",
         "motors_.trig_status = motors_.trig->Update();",
         "motors_.trig->Update();",
+    ),
+    (
+        "hardcoded trigger tooth count reintroduced",
+        "static_cast<float>(PARAM.num_trig_tooth)",
+        "10.0f",
     ),
 )
 
