@@ -58,7 +58,7 @@ required_hardware:
 depends:
   - pldx/CMD
   - pldx/RMMotor
-  - pldx/NavHostData
+  - pldx/HostDataLink
 === END MANIFEST === */
 // clang-format on
 
@@ -69,8 +69,8 @@ depends:
 #include <cstring>
 
 #include "CMD.hpp"
+#include "HostDataLink.hpp"
 #include "Motor.hpp"
-#include "NavHostData.hpp"
 #include "RMMotor.hpp"
 #include "Referee.hpp"
 #include "app_framework.hpp"
@@ -298,8 +298,8 @@ class InfantryLauncher {
         pid_fric_0_(pid_param_fric_speed_0),
         pid_fric_1_(pid_param_fric_speed_1),
         feedback_topic_(
-            LibXR::Topic::CreateTopic<Pldx::NavHostData::GimbalFeedbackV1>(
-                Pldx::NavHostData::LAUNCHER_FEEDBACK_TOPIC, nullptr, true)),
+            LibXR::Topic::CreateTopic<Pldx::HostDataLink::GimbalFeedbackV1>(
+                Pldx::HostDataLink::LAUNCHER_FEEDBACK_TOPIC, nullptr, true)),
         referee_(referee) {
     trig_.expect_freq = PARAM.max_frequency;
     fric_.expect_rpm = PARAM.fric1_setpoint_speed;
@@ -357,8 +357,8 @@ class InfantryLauncher {
 
   static void ThreadFunc(InfantryLauncher* self) {
     LibXR::Topic::ASyncSubscriber<CMD::LauncherCMD> cmd_sub("launcher_cmd");
-    LibXR::Topic::ASyncSubscriber<Pldx::NavHostData::SentryInfoOnline>
-        online_info_sub(Pldx::NavHostData::ONLINE_INFO_TOPIC);
+    LibXR::Topic::ASyncSubscriber<Pldx::HostDataLink::SentryInfoOnline>
+        online_info_sub(Pldx::HostDataLink::ONLINE_INFO_TOPIC);
     cmd_sub.StartWaiting();
     online_info_sub.StartWaiting();
     self->last_online_time_ = LibXR::Timebase::GetMicroseconds();
@@ -677,7 +677,7 @@ class InfantryLauncher {
   Heat heat_;
   launcher::HeatCtrl heat_ctrl_;
 
-  /* 在线信息（Pldx::NavHostData::SentryInfoOnline）新鲜度与弹量 */
+  /* 在线信息（Pldx::HostDataLink::SentryInfoOnline）新鲜度与弹量 */
   struct OnlineInfo {
     bool valid = false; /* IsOnlineInfoFresh() 的第一个条件 */
     bool bullet_count_valid = false;
@@ -719,15 +719,15 @@ class InfantryLauncher {
   void PublishFeedback() {
     LibXR::Mutex::LockGuard lock(mutex_);
     const auto now = LibXR::Timebase::GetMilliseconds();
-    Pldx::NavHostData::GimbalFeedbackV1 feedback{};
+    Pldx::HostDataLink::GimbalFeedbackV1 feedback{};
     feedback.bullet_speed_mps = ref_data_.bullet_speed;
     feedback.bullet_count = online_.bullet_count;
     if (IsOnlineInfoFresh(now) && std::isfinite(feedback.bullet_speed_mps) &&
         feedback.bullet_speed_mps > 0.0F) {
-      feedback.valid_flags |= Pldx::NavHostData::GIMBAL_BULLET_SPEED_VALID;
+      feedback.valid_flags |= Pldx::HostDataLink::GIMBAL_BULLET_SPEED_VALID;
     }
     if (online_.bullet_count_valid && IsOnlineInfoFresh(now)) {
-      feedback.valid_flags |= Pldx::NavHostData::GIMBAL_BULLET_COUNT_VALID;
+      feedback.valid_flags |= Pldx::HostDataLink::GIMBAL_BULLET_COUNT_VALID;
     }
     feedback_topic_.Publish(feedback);
   }
