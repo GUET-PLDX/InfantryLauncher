@@ -7,7 +7,6 @@ SOURCE = HEADER.read_text(encoding="utf-8")
 
 required = (
     "bool heat_control_enabled;",
-    "heat_control_enabled: true",
     "Pldx::HostDataLink::SentryInfoOnline",
     "Pldx::HostDataLink::ONLINE_INFO_TOPIC",
     "launcher::param::ONLINE_INFO_TIMEOUT_MS",

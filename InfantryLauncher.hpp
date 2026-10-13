@@ -3,62 +3,10 @@
 // clang-format off
 /* === MODULE MANIFEST V2 ===
 module_description: No description provided
-constructor_args:
-  - motor_fric_front_left: '@&motor_fric_0'
-  - motor_fric_front_right: '@&motor_fric_1'
-  - motor_trig: '@&motor_trig'
-  - task_stack_depth: 4096
-  - pid_trig_angle:
-      k: 1.0
-      p: 4000.0
-      i: 0.0
-      d: 0.0
-      i_limit: 0.0
-      out_limit: 4000.0
-      cycle: false
-  - pid_trig_speed:
-      k: 1.0
-      p: 0.0012
-      i: 0.0005
-      d: 0.0
-      i_limit: 1.0
-      out_limit: 1.0
-      cycle: false
-  - pid_fric_speed_0:
-      k: 1.0
-      p: 0.002
-      i: 0.0
-      d: 0.0
-      i_limit: 0.0
-      out_limit: 1.0
-      cycle: false
-  - pid_fric_speed_1:
-      k: 1.0
-      p: 0.002
-      i: 0.0
-      d: 0.0
-      i_limit: 0.0
-      out_limit: 1.0
-      cycle: false
-  - LauncherParam:
-      fric1_setpoint_speed: 6500.0
-      target_bullet_speed: 25.0
-      bullet_speed_tolerance: 1.5
-      trig_gear_ratio: 36.0
-      num_trig_tooth: 10
-      heat_control_enabled: true
-      single_heat: 10.0
-      max_frequency: 15.0
-  - cmd: '@&cmd'
-  - referee: '@nullptr'
-  - thread_priority: LibXR::Thread::Priority::HIGH
-required_hardware:
-  - dr16
-  - can
 depends:
-  - pldx/CMD
-  - pldx/RMMotor
-  - pldx/HostDataLink
+- id: GUET-PLDX/CMD
+- id: GUET-PLDX/RMMotor
+- id: GUET-PLDX/HostDataLink
 === END MANIFEST === */
 // clang-format on
 
@@ -73,9 +21,9 @@ depends:
 #include "Motor.hpp"
 #include "RMMotor.hpp"
 #include "Referee.hpp"
-#include "app_framework.hpp"
 #include "cycle_value.hpp"
 #include "event.hpp"
+#include "libxr.hpp"
 #include "libxr_cb.hpp"
 #include "libxr_def.hpp"
 #include "libxr_time.hpp"
@@ -282,7 +230,6 @@ class InfantryLauncher {
   };
 
   InfantryLauncher(
-      LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
       RMMotor* motor_fric_0, RMMotor* motor_fric_1, RMMotor* motor_trig,
       uint32_t task_stack_depth, LibXR::PID<float>::Param pid_param_trig_angle,
       LibXR::PID<float>::Param pid_param_trig_speed,
@@ -303,8 +250,6 @@ class InfantryLauncher {
         referee_(referee) {
     trig_.expect_freq = PARAM.max_frequency;
     fric_.expect_rpm = PARAM.fric1_setpoint_speed;
-    UNUSED(hw);
-    UNUSED(app);
 
     thread_.Create(this, ThreadFunc, "LauncherThread", task_stack_depth,
                    thread_priority);

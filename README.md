@@ -43,3 +43,9 @@ heat and locally predicted heat is always used.
 `SentryInfoOnline` 接收时间，超过 300 ms 未收到新数据时，将裁判数据视为失效。
 
 数据失效后，模块会清除当前发射意图，禁止拨弹，拨弹频率和摩擦轮目标转速归零，并把 READY 摩擦轮模式收敛到已有的 SAFE 状态。后续收到新鲜裁判数据时不会自动恢复 READY 或自动发射，仍需由现有事件和状态机重新进入发射准备流程。
+
+## LibXR 2.0 静态装配
+
+使用 xrobot 1.0.1 的 `module` / 有序 `args`；构造函数显式注入外设与服务，实例按依赖顺序创建。参数名和顺序以头文件中的构造函数为准，固件示例见 `User/RobotConfig/`。
+
+保留 PLDX 控制、协议、超时与离线保护。 `OnMonitor()` 由生成的监控循环直接调用。
