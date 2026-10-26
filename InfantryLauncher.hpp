@@ -231,11 +231,43 @@ class InfantryLauncher {
 
   InfantryLauncher(
       RMMotor* motor_fric_0, RMMotor* motor_fric_1, RMMotor* motor_trig,
-      uint32_t task_stack_depth, LibXR::PID<float>::Param pid_param_trig_angle,
-      LibXR::PID<float>::Param pid_param_trig_speed,
-      LibXR::PID<float>::Param pid_param_fric_speed_0,
-      LibXR::PID<float>::Param pid_param_fric_speed_1,
-      LauncherParam launcher_param, CMD* cmd, Referee* referee = nullptr,
+      CMD* cmd, Referee* referee, uint32_t task_stack_depth = 4096,
+      LibXR::PID<float>::Param pid_param_trig_angle = {.k = 1.0,
+                                                       .p = 4000.0,
+                                                       .i = 0.0,
+                                                       .d = 0.0,
+                                                       .i_limit = 0.0,
+                                                       .out_limit = 4000.0,
+                                                       .cycle = false},
+      LibXR::PID<float>::Param pid_param_trig_speed = {.k = 1.0,
+                                                       .p = 0.0012,
+                                                       .i = 0.0005,
+                                                       .d = 0.0,
+                                                       .i_limit = 1.0,
+                                                       .out_limit = 1.0,
+                                                       .cycle = false},
+      LibXR::PID<float>::Param pid_param_fric_speed_0 = {.k = 1.0,
+                                                         .p = 0.002,
+                                                         .i = 0.0,
+                                                         .d = 0.0,
+                                                         .i_limit = 0.0,
+                                                         .out_limit = 1.0,
+                                                         .cycle = false},
+      LibXR::PID<float>::Param pid_param_fric_speed_1 = {.k = 1.0,
+                                                         .p = 0.002,
+                                                         .i = 0.0,
+                                                         .d = 0.0,
+                                                         .i_limit = 0.0,
+                                                         .out_limit = 1.0,
+                                                         .cycle = false},
+      LauncherParam launcher_param = {.fric1_setpoint_speed = 6500.0,
+                                      .target_bullet_speed = 25.0,
+                                      .bullet_speed_tolerance = 1.5,
+                                      .trig_gear_ratio = 36.0,
+                                      .num_trig_tooth = 10,
+                                      .heat_control_enabled = true,
+                                      .single_heat = 10.0,
+                                      .max_frequency = 15.0},
       LibXR::Thread::Priority thread_priority = LibXR::Thread::Priority::HIGH)
       : PARAM(launcher_param),
         motors_{
@@ -250,7 +282,6 @@ class InfantryLauncher {
         referee_(referee) {
     trig_.expect_freq = PARAM.max_frequency;
     fric_.expect_rpm = PARAM.fric1_setpoint_speed;
-
     thread_.Create(this, ThreadFunc, "LauncherThread", task_stack_depth,
                    thread_priority);
 
