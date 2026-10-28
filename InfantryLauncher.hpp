@@ -293,7 +293,8 @@ class InfantryLauncher {
 
     auto lost_ctrl_callback = LibXR::Callback<uint32_t>::Create(
         [](bool in_isr, InfantryLauncher* self, uint32_t event_id) {
-          UNUSED(in_isr);
+          ASSERT(!in_isr);
+          if (in_isr) return;
           UNUSED(event_id);
           self->mutex_.Lock();
           self->LostCtrl();
@@ -305,7 +306,8 @@ class InfantryLauncher {
 
     auto event_callback = LibXR::Callback<uint32_t>::Create(
         [](bool in_isr, InfantryLauncher* self, uint32_t event_id) {
-          UNUSED(in_isr);
+          ASSERT(!in_isr);
+          if (in_isr) return;
           self->mutex_.Lock();
           self->SetMode(event_id);
           self->mutex_.Unlock();
@@ -340,6 +342,7 @@ class InfantryLauncher {
     self->last_online_time_ = LibXR::Timebase::GetMicroseconds();
     auto last_time = LibXR::Timebase::GetMilliseconds();
     while (true) {
+      self->mutex_.Lock();
       auto now = LibXR::Timebase::GetMicroseconds();
       self->dt_ = (now - self->last_online_time_).ToSecondf();
       self->last_online_time_ = now;
@@ -364,11 +367,10 @@ class InfantryLauncher {
         self->online_.bullet_count_valid = true;
         online_info_sub.StartWaiting();
       }
-      self->mutex_.Lock();
       self->Update();
       self->RunStateMachine();
-      self->mutex_.Unlock();
       self->Control();
+      self->mutex_.Unlock();
       const auto now_ms =
           static_cast<uint32_t>(LibXR::Timebase::GetMilliseconds());
       if (now_ms - self->last_feedback_publish_ms_ >= 10U) {
