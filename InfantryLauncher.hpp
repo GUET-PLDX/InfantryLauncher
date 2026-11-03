@@ -6,7 +6,7 @@ module_description: No description provided
 depends:
 - id: GUET-PLDX/CMD
 - id: GUET-PLDX/RMMotor
-- id: GUET-PLDX/HostDataLink
+- id: GUET-PLDX/NavLink
 === END MANIFEST === */
 // clang-format on
 
