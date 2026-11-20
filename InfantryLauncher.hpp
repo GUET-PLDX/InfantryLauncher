@@ -571,32 +571,15 @@ class InfantryLauncher {
   static constexpr uint32_t UI_FIGURE_READD_DIV = 60;
 
   /* === 状态分层（对齐 Gimbal/Omni 范式）===
-   * 1. PARAM  构造期配置（含热控开关与热量参数），const；
-   * 2. motors_   执行器层：句柄 + 反馈 + 在线状态（错误码）；
-   * 3. state_    模式层：外部事件 → 状态机 → 触发模式；
-   * 4. trig_     拨弹盘子系统：步进/标定/卡弹/连发会话；
-   * 5. fric_     摩擦轮子系统：转速目标与弹速微调；
-   * 6. heat_     热量子系统：热量记账与 Fire_Ctrl 分档弹频调度门控；
-   * 7. online_   导航主机在线信息新鲜度与弹量；
-   * 8. ui_       裁判系统 UI 绘制状态。
-   * 其余平铺成员与 Gimbal 同构：PID 组 / 时序 / 框架句柄。
+   * 指令、裁判数据与时序 → 模式和各子系统状态
+   * → 配置、电机组、PID 和框架句柄。
    * 调试：watch 直接展开 launcher 对象按声明顺序查看。 */
 
-  const LauncherParam PARAM;
-
-  /* 执行器层（fb = 最近一次电机反馈，status = 最近一次 Update 结果） */
-  struct Motors {
-    RMMotor* fric_0;
-    RMMotor* fric_1;
-    RMMotor* trig;
-    Motor::Feedback fric_0_fb{};
-    Motor::Feedback fric_1_fb{};
-    Motor::Feedback trig_fb{};
-    LibXR::ErrorCode fric_0_status = LibXR::ErrorCode::FAILED;
-    LibXR::ErrorCode fric_1_status = LibXR::ErrorCode::FAILED;
-    LibXR::ErrorCode trig_status = LibXR::ErrorCode::FAILED;
-  };
-  Motors motors_;
+  CMD::LauncherCMD launcher_cmd_{};
+  RefereeData ref_data_;
+  float dt_ = 0.0f;
+  LibXR::MicrosecondTimestamp last_online_time_ = 0;
+  uint32_t last_feedback_publish_ms_ = 0U;
 
   /* 模式层（event = 遥控/事件注入的摩擦轮档位；state = 状态机输出；
    * mode = 触发模式；last_mode = 上一周期的触发模式，用于沿检测） */
@@ -674,20 +657,28 @@ class InfantryLauncher {
   };
   Ui ui_;
 
+  const LauncherParam PARAM;
+
+  /* 执行器层（fb = 最近一次电机反馈，status = 最近一次 Update 结果） */
+  struct Motors {
+    RMMotor* fric_0;
+    RMMotor* fric_1;
+    RMMotor* trig;
+    Motor::Feedback fric_0_fb{};
+    Motor::Feedback fric_1_fb{};
+    Motor::Feedback trig_fb{};
+    LibXR::ErrorCode fric_0_status = LibXR::ErrorCode::FAILED;
+    LibXR::ErrorCode fric_1_status = LibXR::ErrorCode::FAILED;
+    LibXR::ErrorCode trig_status = LibXR::ErrorCode::FAILED;
+  };
+  Motors motors_;
+
   LibXR::PID<float> pid_trig_angle_;
   LibXR::PID<float> pid_trig_sp_;
   LibXR::PID<float> pid_fric_0_;
   LibXR::PID<float> pid_fric_1_;
 
   LibXR::Topic feedback_topic_;
-
-  float dt_ = 0.0f;
-  LibXR::MicrosecondTimestamp last_online_time_ = 0;
-  uint32_t last_feedback_publish_ms_ = 0U;
-
-  CMD::LauncherCMD launcher_cmd_{};
-  RefereeData ref_data_;
-
   Referee* referee_ = nullptr;
   LibXR::Event launcher_event;
   LibXR::Thread thread_;
