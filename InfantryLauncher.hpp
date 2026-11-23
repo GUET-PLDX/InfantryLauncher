@@ -7,7 +7,7 @@ depends:
 - id: GUET-PLDX/CMD
 - id: GUET-PLDX/RMMotor
 - id: GUET-PLDX/NavLink
-  ref: 4b559e684d3512666b77ef1351aea822169e121f
+  ref: c716be3c007dbea81565357585f7041e55930489
 === END MANIFEST === */
 // clang-format on
 
