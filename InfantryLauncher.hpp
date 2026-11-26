@@ -5,6 +5,7 @@
 module_description: No description provided
 depends:
 - id: GUET-PLDX/CMD
+  ref: 9d9b7fda740b71eb2525617926664081d3cf27b0
 - id: GUET-PLDX/RMMotor
 - id: GUET-PLDX/NavLink
   ref: c716be3c007dbea81565357585f7041e55930489
@@ -12,6 +13,7 @@ depends:
 // clang-format on
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -221,7 +223,7 @@ class InfantryLauncher {
     uint8_t num_trig_tooth;
     bool heat_control_enabled; /* 启用基于裁判剩余热量的分档弹频控制 */
     float single_heat;         /* 单发热量消耗 */
-    float max_frequency;       /* 最大发射频率（全速档射频），单位 Hz */
+    float max_frequency; /* 最大发射频率（全速档射频），单位 Hz */
   };
 
   struct HeatLimit {
@@ -283,6 +285,13 @@ class InfantryLauncher {
         referee_(referee) {
     trig_.expect_freq = PARAM.max_frequency;
     fric_.expect_rpm = PARAM.fric1_setpoint_speed;
+    auto command_callback = LibXR::Topic::Callback::Create(
+        [](bool, InfantryLauncher* self, const CMD::LauncherCMD& command) {
+          self->latest_fire_request_.store(command.isfire);
+        },
+        this);
+    LibXR::Topic(LibXR::Topic::Find("launcher_cmd"))
+        .RegisterCallback(command_callback);
     thread_.Create(this, ThreadFunc, "LauncherThread", task_stack_depth,
                    thread_priority);
 
@@ -335,10 +344,8 @@ class InfantryLauncher {
   }
 
   static void ThreadFunc(InfantryLauncher* self) {
-    LibXR::Topic::ASyncSubscriber<CMD::LauncherCMD> cmd_sub("launcher_cmd");
     LibXR::Topic::ASyncSubscriber<Pldx::HostDataLink::SentryInfoOnline>
         online_info_sub(Pldx::HostDataLink::ONLINE_INFO_TOPIC);
-    cmd_sub.StartWaiting();
     online_info_sub.StartWaiting();
     self->last_online_time_ = LibXR::Timebase::GetMicroseconds();
     auto last_time = LibXR::Timebase::GetMilliseconds();
@@ -348,10 +355,7 @@ class InfantryLauncher {
       self->dt_ = (now - self->last_online_time_).ToSecondf();
       self->last_online_time_ = now;
 
-      if (cmd_sub.Available()) {
-        self->launcher_cmd_ = cmd_sub.GetData();
-        cmd_sub.StartWaiting();
-      }
+      self->launcher_cmd_.isfire = self->latest_fire_request_.load();
       if (online_info_sub.Available()) {
         const auto online = online_info_sub.GetData();
         self->online_.valid = true;
@@ -577,6 +581,7 @@ class InfantryLauncher {
    * 调试：watch 直接展开 launcher 对象按声明顺序查看。 */
 
   CMD::LauncherCMD launcher_cmd_{};
+  std::atomic<bool> latest_fire_request_{false};
   RefereeData ref_data_;
   float dt_ = 0.0f;
   LibXR::MicrosecondTimestamp last_online_time_ = 0;
@@ -596,24 +601,24 @@ class InfantryLauncher {
   struct Trig {
     float freq = 0.0f; /* 热量门控输出的当前允许射频 */
     float expect_freq =
-        15.0f;          /* 热控关闭时的固定射频，构造期置 max_frequency */
-    float angle = 0.0f; /* 拨弹盘累计转角 */
-    float target_angle = 0.0f;        /* 当前步进目标角 */
-    float last_motor_angle = 0.0f;    /* 电机侧上一周期角度（算增量） */
-    float first_shot_angle = 0.0f;    /* 标定锚点：首发对齐的拨弹盘角度 */
-    float jam_target_angle = 0.0f;    /* 卡弹反转的往返中心角 */
-    float progress = 0.0f;            /* 已拨过的整格进度（热量记账） */
-    float last_angle = 0.0f;          /* 上一周期 angle 快照（热量/标定共用） */
-    float fric_speed_peak = 0.0f;     /* 标定达速判定的摩擦轮峰值转速 */
-    int32_t target_shot_index = 0;    /* 目标格序号（相对 first_shot_angle） */
-    uint8_t shot_count = 1;           /* 单次触发发数（SINGLE=1 / BOOST_3=3） */
-    bool step_active = false;         /* 步进进行中 */
-    bool reverse = false;             /* 卡弹反转方向 */
-    bool calibrated = false;          /* 拨弹盘相位标定完成 */
+        15.0f; /* 热控关闭时的固定射频，构造期置 max_frequency */
+    float angle = 0.0f;            /* 拨弹盘累计转角 */
+    float target_angle = 0.0f;     /* 当前步进目标角 */
+    float last_motor_angle = 0.0f; /* 电机侧上一周期角度（算增量） */
+    float first_shot_angle = 0.0f; /* 标定锚点：首发对齐的拨弹盘角度 */
+    float jam_target_angle = 0.0f; /* 卡弹反转的往返中心角 */
+    float progress = 0.0f; /* 已拨过的整格进度（热量记账） */
+    float last_angle = 0.0f; /* 上一周期 angle 快照（热量/标定共用） */
+    float fric_speed_peak = 0.0f; /* 标定达速判定的摩擦轮峰值转速 */
+    int32_t target_shot_index = 0; /* 目标格序号（相对 first_shot_angle） */
+    uint8_t shot_count = 1;   /* 单次触发发数（SINGLE=1 / BOOST_3=3） */
+    bool step_active = false; /* 步进进行中 */
+    bool reverse = false;     /* 卡弹反转方向 */
+    bool calibrated = false;  /* 拨弹盘相位标定完成 */
     bool calibration_pending = false; /* 标定流程挂起 */
     bool continue_mode = false;       /* 连发模式（右拨杆中档） */
     bool press_continue = false;      /* 长按升级为连发 */
-    bool last_fire_notify = false;    /* 上一周期 isfire（上升沿检测） */
+    bool last_fire_notify = false; /* 上一周期 isfire（上升沿检测） */
     LibXR::MillisecondTimestamp fire_press_time = 0;
     LibXR::MillisecondTimestamp last_trig_time = 0;
     LibXR::MillisecondTimestamp last_jam_time = 0;
