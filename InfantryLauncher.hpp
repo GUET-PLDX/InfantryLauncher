@@ -5,10 +5,10 @@
 module_description: No description provided
 depends:
 - id: GUET-PLDX/CMD
-  ref: d9254a5957d641c0dbceda88eea14c001648c554
+  ref: 923ca3823980650c5ee28a2181c53448d7489183
 - id: GUET-PLDX/RMMotor
 - id: GUET-PLDX/NavLink
-  ref: c716be3c007dbea81565357585f7041e55930489
+  ref: 5f420c3b3348b75c5a92d80878e509f618eb9f9b
 === END MANIFEST === */
 // clang-format on
 
