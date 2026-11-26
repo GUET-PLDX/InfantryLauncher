@@ -5,7 +5,7 @@
 module_description: No description provided
 depends:
 - id: GUET-PLDX/CMD
-  ref: 9d9b7fda740b71eb2525617926664081d3cf27b0
+  ref: d9254a5957d641c0dbceda88eea14c001648c554
 - id: GUET-PLDX/RMMotor
 - id: GUET-PLDX/NavLink
   ref: c716be3c007dbea81565357585f7041e55930489
